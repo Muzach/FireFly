@@ -1,0 +1,263 @@
+#include "InternetButton/InternetButton.h"
+#include "math.h"
+
+int button1 = 4;
+int button2 = 5;
+int button3 = 6;
+int button4 = 7;
+
+int NUM_LEDS = 12;
+double speedThroughSine=.001;
+int position=0;
+int waveDelay=10;
+
+int red=250;
+int green=250;
+int blue=225;
+int targetRed=250;
+int targetGreen=250;
+int targetBlue=225;
+int ledThreshold=125;
+int ledFloor=25;
+
+int loopDelay = 2000; //2 seconds
+int numberOfLoopsToCheckClock = 1500;
+int numberOfLoopsToVaryColor = 10000;
+
+bool lightIsOn = false;
+bool firefliesAreActive = false;
+
+int currentTime = 0;
+int syncTimeInterval = 60 * 60 * 20 * 1000; //20 hours
+int lastTimeSync = 0;
+int lastButtonPress = 0;
+int checkClockInterval = 10 * 1000;
+int lastAlarmCheck = 0;
+
+int onTimeSeconds = (20*60*60)+(25*60); //8:30pm
+int offTimeSeconds = (7*60*60); //7am
+//TEST: early morning  device should be on
+//TEST mid-day  device should be off
+//TEST night  device should be on again
+
+InternetButton b = InternetButton();
+
+void setup() {
+    b.begin();
+    Time.zone(-7); //Pacific
+    randomSeed(analogRead(0));
+
+    Particle.variable("onTime", onTimeSeconds);
+    Particle.variable("offTime", offTimeSeconds);
+    Particle.function("TellFirefly", TellFirefly);
+
+    attachInterrupt(button1, onButton, FALLING);
+    attachInterrupt(button2, onButton, FALLING);
+    attachInterrupt(button3, onButton, FALLING);
+    attachInterrupt(button4, onButton, FALLING);
+
+    checkOnOffTime();
+}
+
+void loop() {
+    if (firefliesAreActive) {
+        //Firefly animation
+      position++;
+      for(int i=0; i<NUM_LEDS; i++) {
+        b.ledOn(i,(((sin(i+position*speedThroughSine) * 127 + 128)/255)*red)-ledFloor,(((sin(i+position*speedThroughSine) * 127 + 128)/255)*green)-ledFloor,(((sin(i+position*speedThroughSine) * 127 + 128)/255)*blue)-ledFloor);
+      }
+      delay(waveDelay);
+      blendColor();
+      if (position%numberOfLoopsToCheckClock==0) {
+        tuneupAndClockComparison();
+      }
+      if (position%numberOfLoopsToVaryColor==0) {
+        varyTargetColor();
+      }
+
+
+    } else {
+        tuneupAndClockComparison();
+        delay(loopDelay);
+    }
+}
+
+void tuneupAndClockComparison() {
+    int currentMillis = millis();
+    int lastCheckMillis = currentMillis - lastAlarmCheck;
+    //Particle.publish("Firefly", String(Time.format(TIME_FORMAT_ISO8601_FULL)), PRIVATE);
+    if (lastCheckMillis < 0 || lastCheckMillis > checkClockInterval) {
+        lastAlarmCheck = currentMillis;
+        syncParticleTime();
+        checkOnOffTime();
+    }
+}
+
+void syncParticleTime() {
+        int currentMillis = millis();
+        int lastSyncMillis = currentMillis - lastTimeSync;
+        if (lastSyncMillis < 0 || lastSyncMillis > syncTimeInterval) {
+            Particle.publish("Firefly", "SyncTime Starting", PRIVATE);
+            lastTimeSync = currentMillis;
+            Particle.syncTime();
+            Particle.publish("Firefly", ("syncParticleTime:" + Time.format(TIME_FORMAT_ISO8601_FULL)), PRIVATE);
+        }
+}
+
+void checkOnOffTime() {
+  //Particle.publish("Firefly", "Testing On/Off Times...", PRIVATE);
+   if ((getSecondsFromStartOfDay(Time.now())>offTimeSeconds) && (getSecondsFromStartOfDay(Time.now())<onTimeSeconds)) {
+     //i'm in the middle of the day (after off morning time and before on night time), light should be off
+     if (firefliesAreActive) {
+       Particle.publish("Firefly", "Fireflies are on, but it's after the wakeup time.  Turning off", PRIVATE);
+       animateWakeupTime();
+     }
+   } else {
+     //i'm either in the early morning or late night.  Light should be on either way.
+     if (!firefliesAreActive) {
+       Particle.publish("Firefly", "Fireflies are off, but it's sleepytime.  Turning on", PRIVATE);
+       animateSleepyTime();
+     }
+   }
+}
+
+void onButton() {
+    int currentMillis = millis();
+    if (currentMillis - lastButtonPress > 300) {
+        lastButtonPress = currentMillis;
+        if (!firefliesAreActive) {
+            toggleLight();
+        }
+    }
+}
+
+void toggleLight() {
+    if (lightIsOn) {
+        lightIsOn = false;
+        turnLightOff();
+    } else {
+        lightIsOn = true;
+        turnLightOn();
+    }
+}
+
+void varyTargetColor() {
+  generateRandomColors();
+  while(!colorIsAcceptable()) {
+    generateRandomColors();
+  }
+  //Debugging of color selection
+  //Particle.publish("Firefly", "TargetColorRed: " + String(targetRed), PRIVATE);
+  //Particle.publish("Firefly", "TargetColorGreen: " + String(targetGreen), PRIVATE);
+  //Particle.publish("Firefly", "TargetColorBlue: " + String(targetBlue), PRIVATE);
+}
+
+boolean colorIsAcceptable() {
+  if (targetRed<ledThreshold && targetGreen<ledThreshold && targetBlue<ledThreshold) { //we want brightness!
+    return false;
+  }
+  if (targetRed>(targetGreen+targetBlue)) { //nothing too red
+    return false;
+  }
+  return true;
+}
+
+void generateRandomColors() {
+  targetRed=random(255);
+  targetGreen=random(255);
+  targetBlue=random(255);
+}
+
+void resetColors() {
+  red=250;
+  green=250;
+  blue=225;
+}
+
+void blendColor() {
+  if (red<targetRed) {red++;}
+  if (red>targetRed) {red--;}
+  if (green<targetGreen) {green++;}
+  if (green>targetGreen) {green--;}
+  if (blue<targetBlue) {blue++;}
+  if (blue>targetBlue) {blue--;}
+}
+
+void turnLightOn() {
+    b.allLedsOn(255, 255, 255);
+}
+
+void turnLightOff() {
+    b.allLedsOff();
+}
+
+void animateWakeupTime() {
+    rainbowMe();
+    //b.allLedsOn(255, 255, 255);
+    //delay(750);
+    //b.playSong("C4,8,E4,8,G4,8,C5,8,G5,4,C4,8,E4,8,G4,8,C5,8,G5,4");
+    //delay(500);
+    position=0; //reset integer
+    resetColors();
+
+    firefliesAreActive=false;
+    b.allLedsOff();
+}
+
+void animateSleepyTime() {
+    b.allLedsOff();
+    b.playSong("C4,8,E4,8,G4,8,C5,8,G5,4,C4,8,E4,8,G4,8,C5,8,G5,4");
+    delay(500);
+    firefliesAreActive=true;
+}
+
+void rainbowMe(){
+    uint32_t startMillis = millis();
+    while(millis() - startMillis < 20*1000UL){
+        b.advanceRainbow(10,30);
+        Particle.process();
+    }
+    b.allLedsOff();
+}
+
+int getSecondsFromStartOfDay(int epochTime) {
+    return (Time.hour(epochTime) * 60 * 60) + (Time.minute(epochTime) * 60) + Time.second(epochTime);
+}
+
+int TellFirefly (String command) {
+      Particle.publish("Firefly", "Firefly Command Received", PRIVATE);
+        if (command=="rainbow")
+        {
+            rainbowMe();
+            return 1;
+        }
+        else if (command=="animateWakeup")
+        {
+            animateWakeupTime();
+            return 1;
+        }
+        else if (command=="animateSleepyTime")
+        {
+            animateSleepyTime();
+            return 1;
+        }
+        else if (command=="checkOnOffTime")
+        {
+            checkOnOffTime();
+            return 1;
+        }
+        else if (command=="tuneupAndClockComparison")
+        {
+            tuneupAndClockComparison();
+            return 1;
+        }
+        else if (command=="syncParticleTime")
+        {
+            syncParticleTime();
+            return 1;
+        }
+        else
+        {
+        return -1;
+        }
+      }
